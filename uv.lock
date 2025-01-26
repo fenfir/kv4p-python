@@ -307,12 +307,14 @@ version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
     { name = "ble-serial" },
+    { name = "bleak" },
     { name = "flet" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "ble-serial", specifier = ">=3.0.0" },
+    { name = "bleak", specifier = ">=0.22.3" },
     { name = "flet", specifier = "==0.25.2" },
 ]
 

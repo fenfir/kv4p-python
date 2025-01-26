@@ -1,8 +1,11 @@
 import flet as ft
 import logging
+from kv4p import Kv4pHTDevice
 
 SETTINGS_KEY_PREFIX = "kv4p-app-state."
 PRESETS_KEY_PREFIX = "kv4p-app-presets."
+
+bleDevice = Kv4pHTDevice()
 
 
 class FrequencyControlWidget(ft.Row):
@@ -39,28 +42,30 @@ class FrequencyControlWidget(ft.Row):
         ]
         self.expand = True
 
-    def handle_dec_freq(self, e):
-        value = self.client_storage.get(self.key)
-        self.client_storage.set(self.key, round(value - self.step, 4))
-        self.txt_freq.value = f"{self.client_storage.get(self.key):8.4f}"
+    async def handle_dec_freq(self, e):
+        value = await self.client_storage.get_async(self.key)
+        await self.client_storage.set_async(self.key, round(value - self.step, 4))
+        self.txt_freq.value = f"{await self.client_storage.get_async(self.key):8.4f}"
         self.update()
+        await self.parent.tune()
 
-    def handle_inc_freq(self, e):
-        value = self.client_storage.get(self.key)
-        self.client_storage.set(self.key, round(value + self.step, 4))
-        self.txt_freq.value = f"{self.client_storage.get(self.key):8.4f}"
+    async def handle_inc_freq(self, e):
+        value = await self.client_storage.get_async(self.key)
+        await self.client_storage.set_async(self.key, round(value + self.step, 4))
+        self.txt_freq.value = f"{await self.client_storage.get_async(self.key):8.4f}"
         self.update()
+        await self.parent.tune()
 
     def set_value(self, value):
         self.txt_freq.value = f"{value:8.4f}"
         self.update()
 
-    def get_value(self):
-        value = self.client_storage.get(self.key)
+    async def get_value(self):
+        value = await self.client_storage.get_async(self.key)
         return value
 
 
-class FrequencyWidget(ft.Column):
+class TuningWidget(ft.Column):
     def __init__(self, client_storage):
         super().__init__()
 
@@ -87,25 +92,20 @@ class FrequencyWidget(ft.Column):
             self.tx_freq.disabled = True
             self.tx_freq.visible = False
 
+        self.w_tone = ToneWidget(client_storage)
+        self.w_squelch = SquelchWidget(client_storage)
+        self.w_bandwidth = BandwidthWidget(client_storage)
+
         self.controls = [
             self.rx_freq,
             self.btn_split,
             self.tx_freq,
+            self.w_bandwidth,
+            self.w_tone,
+            self.w_squelch,
         ]
 
-    def get_rx_tx_freq(self):
-        rx = self.rx_freq.get_value()
-        tx = self.tx_freq.get_value()
-
-        if not self.client_storage.get(self.key):
-            tx = rx
-
-        return {
-            "rx": rx,
-            "tx": tx,
-        }
-
-    def handle_split(self, e):
+    async def handle_split(self, e):
         value = e.control.value
         self.client_storage.set(self.key, value)
 
@@ -116,8 +116,50 @@ class FrequencyWidget(ft.Column):
             self.tx_freq.disabled = True
             self.tx_freq.visible = False
 
-        self.tx_freq.set_value(self.rx_freq.get_value())
+        self.tx_freq.set_value(await self.rx_freq.get_value())
         self.update()
+
+    async def tune(self):
+        await bleDevice.cmd_tune_to(
+            await self.tx_freq.get_value(),
+            await self.rx_freq.get_value(),
+            await self.w_tone.get_value(),
+            await self.w_squelch.get_value(),
+            await self.w_bandwidth.get_value(),
+        )
+
+
+class BandwidthWidget(ft.Row):
+    def __init__(self, client_storate):
+        super().__init__()
+
+        self.key = SETTINGS_KEY_PREFIX + "bandwidth"
+        self.client_storage = client_storate
+
+        if not self.client_storage.contains_key(self.key):
+            self.client_storage.set(self.key, "N")
+
+        self.dd_bandwidth = ft.Dropdown(
+            value=self.client_storage.get(self.key),
+            options=[
+                ft.dropdown.Option("N", "Narrow"),
+                ft.dropdown.Option("W", "Wide"),
+            ],
+        )
+
+        self.controls = [
+            ft.Text("Bandwidth"),
+            self.dd_bandwidth,
+        ]
+
+    def handle_tone(self, e):
+        logging.info("setting bandwidth: %d", int(self.dd_bandwidth.value))
+
+        self.client_storage.set(self.key, self.dd_bandwidth.value)
+
+    async def get_value(self):
+        value = await self.client_storage.get_async(self.key)
+        return value
 
 
 class FiltersWidget(ft.Row):
@@ -170,17 +212,23 @@ class FiltersWidget(ft.Row):
             "low": low,
         }
 
-    def handle_filters(self, e):
+    async def handle_filters(self, e):
         logging.info(
-            "setting filters:\n  pre: %d\n  high: %d\n  low: %d",
+            "setting filters pre: %d high: %d low: %d",
             self.sw_pre.value,
             self.sw_high.value,
             self.sw_low.value,
         )
 
-        self.client_storage.set(self.key + "pre", self.sw_pre.value)
-        self.client_storage.set(self.key + "high", self.sw_high.value)
-        self.client_storage.set(self.key + "low", self.sw_low.value)
+        await self.client_storage.set_async(self.key + "pre", self.sw_pre.value)
+        await self.client_storage.set_async(self.key + "high", self.sw_high.value)
+        await self.client_storage.set_async(self.key + "low", self.sw_low.value)
+
+        await bleDevice.cmd_filters(
+            self.sw_pre.value,
+            self.sw_high.value,
+            self.sw_low.value,
+        )
 
 
 ctcss_tone_list = [
@@ -252,12 +300,9 @@ class ToneWidget(ft.Row):
             self.dd_tone,
         ]
 
-    def get_tone(self):
-        value = self.client_storage.get(self.key)
-
-        return {
-            "ctcss_tone": value,
-        }
+    async def get_value(self):
+        value = await self.client_storage.get_async(self.key)
+        return int(value)
 
     def handle_tone(self, e):
         logging.info("setting tone: %d", int(self.dd_tone.value))
@@ -265,7 +310,7 @@ class ToneWidget(ft.Row):
         self.client_storage.set(self.key, self.dd_tone.value)
 
 
-class GainWidget(ft.Row):
+class SquelchWidget(ft.Row):
     def __init__(self, client_storage):
         super().__init__()
 
@@ -275,34 +320,31 @@ class GainWidget(ft.Row):
         if not self.client_storage.contains_key(self.key):
             self.client_storage.set(self.key, 4)
 
-        self.dd_gain = ft.Dropdown(
+        self.dd_squelch = ft.Dropdown(
             value=self.client_storage.get(self.key),
             options=[],
             width=100,
-            on_change=self.handle_tone,
+            on_change=self.handle_squelch,
         )
 
         for x in range(1, 9):
-            self.dd_gain.options.append(ft.dropdown.Option(f"{x:d}"))
+            self.dd_squelch.options.append(ft.dropdown.Option(f"{x:d}"))
 
-        self.dd_gain.value = self.client_storage.get(self.key)
+        self.dd_squelch.value = self.client_storage.get(self.key)
 
         self.controls = [
             ft.Text("Gain"),
-            self.dd_gain,
+            self.dd_squelch,
         ]
 
-    def get_tone(self):
-        value = self.client_storage.get(self.key)
+    async def get_value(self):
+        value = await self.client_storage.get_async(self.key)
+        return value
 
-        return {
-            "gain": value,
-        }
+    def handle_squelch(self, e):
+        logging.info("setting gain: %d", int(self.dd_squelch.value))
 
-    def handle_tone(self, e):
-        logging.info("setting gain: %d", int(self.dd_gain.value))
-
-        self.client_storage.set(self.key, self.dd_gain.value)
+        self.client_storage.set(self.key, self.dd_squelch.value)
 
 
 class PTTWidget(ft.Row):
@@ -318,13 +360,24 @@ class PTTWidget(ft.Row):
             on_tap_up=self.handle_ptt_up,
         )
 
-        self.controls = [gd]
+        btn_stop = ft.ElevatedButton(
+            content=ft.Row([ft.Icon(ft.Icons.MULTIPLE_STOP), ft.Text("Stop")]),
+            on_click=self.handle_stop,
+        )
 
-    def handle_ptt_down(self, e):
+        self.controls = [gd, btn_stop]
+
+    async def handle_ptt_down(self, e):
         logging.info("push-to-talk down")
+        await bleDevice.cmd_ptt_down()
 
-    def handle_ptt_up(self, e):
+    async def handle_ptt_up(self, e):
         logging.info("push-to-talk up")
+        await bleDevice.cmd_ptt_up()
+
+    async def handle_stop(self, e):
+        logging.info("stop")
+        await bleDevice.cmd_stop()
 
 
 class SavePresetWidget(ft.Row):
@@ -423,19 +476,25 @@ class PresetsListWidget(ft.Column):
 
 
 def main(page):
-
     page.adaptive = True
 
-    page.appbar = ft.AppBar(title=ft.Text("kv4p HT"), actions=[ft.Button("Connect")])
+    async def handle_connect(e):
+        await bleDevice.connect()
+        btn_connect.text = "Disconnect"
+        page.update()
+
+    btn_connect = ft.Button("Connect", on_click=handle_connect)
+    page.appbar = ft.AppBar(
+        title=ft.Text("kv4p HT"),
+        actions=[btn_connect],
+    )
 
     def talk_view():
         return ft.SafeArea(
             ft.Column(
                 [
-                    FrequencyWidget(page.client_storage),
+                    TuningWidget(page.client_storage),
                     FiltersWidget(page.client_storage),
-                    ToneWidget(page.client_storage),
-                    GainWidget(page.client_storage),
                     PTTWidget(),
                     SavePresetWidget(page.client_storage),
                 ],
